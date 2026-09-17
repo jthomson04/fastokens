@@ -1723,6 +1723,8 @@ mod tests {
 
     #[test]
     fn long_match_crosses_parallel_boundary() {
+        const PATTERN: &str = "[a-z]+";
+
         // Build an input large enough for parallel matching (>= 2 * MIN_CHUNK_SIZE = 16KB).
         // Place a long run of lowercase letters that exceeds CHUNK_OVERLAP (1KB)
         // and spans the authority zone boundary.
@@ -1756,14 +1758,18 @@ mod tests {
                 ..Default::default()
             };
             let mut split = Split::from_config_with_limits(
-                &json!({"Regex": "[a-z]+"}),
+                &json!({"Regex": PATTERN}),
                 "Isolated",
                 false,
                 limits,
             )
             .unwrap();
             // Force two matchers even when the test runs with one available CPU.
-            split.pcre2_regexes = try_compile_pcre2_regexes("[a-z]+", 2, limits).unwrap();
+            split.pcre2_regexes = Some(
+                try_compile_pcre2_regexes(PATTERN, 2, limits)
+                    .unwrap()
+                    .expect("PCRE2 unavailable; boundary repair path not covered"),
+            );
 
             let pieces = split.split(&input).unwrap();
             // There should be exactly 3 pieces: digits, long 'a' run, digits.
