@@ -994,8 +994,13 @@ fn find_matches_pcre2(
     let mut matches = Vec::with_capacity(input.len() / 3);
     let bytes = input.as_bytes();
     let mut pos = 0;
+    if bytes.is_empty() {
+        return Ok(matches);
+    }
+    // Reuse one workspace while retaining find_at's exact stopping behavior.
+    let mut locations = regex.regex.capture_locations();
     while pos < bytes.len() {
-        match regex.regex.find_at(bytes, pos) {
+        match regex.regex.captures_read_at(&mut locations, bytes, pos) {
             Ok(Some(m)) => {
                 if m.start() == m.end() {
                     pos = m.end() + 1;
@@ -1025,6 +1030,80 @@ mod tests {
     use serde_json::json;
 
     use super::*;
+
+    #[test]
+    fn scratch_reuse_matches_stock_offsets_and_errors() {
+        fn stock(
+            input: &str,
+            base: usize,
+            regex: &Pcre2Regex,
+        ) -> Result<Vec<(usize, usize)>, String> {
+            let mut out = Vec::new();
+            let mut pos = 0;
+            while pos < input.len() {
+                match regex.regex.find_at(input.as_bytes(), pos) {
+                    Ok(Some(m)) if m.start() == m.end() => pos = m.end() + 1,
+                    Ok(Some(m)) => {
+                        out.push((base + m.start(), base + m.end()));
+                        pos = m.end();
+                    }
+                    Ok(None) => break,
+                    Err(e) => return Err(format!("PCRE2: {e}")),
+                }
+            }
+            Ok(out)
+        }
+        let mut inputs = vec![String::new()];
+        let mut level = vec![String::new()];
+        for _ in 0..4 {
+            level = level
+                .iter()
+                .flat_map(|s| ["a", "b", " ", "\n", "é", "🙂"].map(|c| format!("{s}{c}")))
+                .collect();
+            inputs.extend(level.clone());
+        }
+        inputs.push("aaaaaaaaaaaaaaaa!".into());
+        inputs.push("hello 世界 123\n".repeat(MIN_CHUNK_SIZE));
+        for pattern in [
+            r"a|(?=b)|$(?R)",
+            r"\w+|\s+|[^\w\s]",
+            r"a*",
+            r"",
+            r"^|$",
+            r"\b",
+            r"(?=a)",
+            r"(?<=a)b",
+            r"a|(?=b)|$",
+            r"\A.+\z",
+            r"\s+(?!\S)",
+            r"never_matches",
+            r"(*LIMIT_MATCH=1)^(a+)+$",
+            r"a\K",
+            r"(?=é)|.",
+        ] {
+            let regex = Pcre2Regex {
+                regex: pcre2::bytes::RegexBuilder::new()
+                    .utf(true)
+                    .ucp(true)
+                    .jit_if_available(true)
+                    .build(pattern)
+                    .unwrap(),
+                source: pattern.into(),
+                max_jit_stack_size: None,
+            };
+            for input in &inputs {
+                let got = find_matches_pcre2(input, 17, &regex).map_err(|e| match e {
+                    Error::Unsupported(s) => s,
+                    e => e.to_string(),
+                });
+                assert_eq!(
+                    got,
+                    stock(input, 17, &regex),
+                    "pattern={pattern:?}, input={input:?}"
+                );
+            }
+        }
+    }
 
     // ── Behavior tests ──────────────────────────────────
 
